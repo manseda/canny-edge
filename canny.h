@@ -2,7 +2,9 @@
 
 #include <math.h>
 
+#include <cstdlib>
 #include <iostream>
+#include <string>
 #include <vector>
 // #include <fstream>
 
@@ -10,7 +12,7 @@
 // #include <opencv2/imgcodecs.hpp>
 // #include <opencv2/imgproc.hpp>
 
-void cannyEdgeDetection(std::string readLocation, std::string writeLocation, double lowerThreshold, double higherThreshold);
+bool cannyEdgeDetection(const std::string& readLocation, const std::string& writeLocation, double lowerThreshold, double higherThreshold);
 std::vector<int> imgToArray(cv::Mat img, uint8_t* pixelPtr, int sizeRows, int sizeCols, int sizeDepth);
 void arrayToImg(std::vector<int>& pixels, uint8_t* pixelPtr, int sizeRows, int sizeCols, int sizeDepth);
 std::vector<int> gaussianBlur(std::vector<int>& pixels, std::vector<std::vector<double>>& kernel, double kernelConst, int sizeRows, int sizeCols, int sizeDepth);

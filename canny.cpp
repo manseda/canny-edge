@@ -1,13 +1,32 @@
 #include "canny.h"
 
+#include <chrono>
+#include <iomanip>
+
 // TODO: implement a function to read and write the images.
 
-void cannyEdgeDetection(std::string readLocation, std::string writeLocation, double lowerThreshold, double higherThreshold) {
+namespace {
+
+using Clock = std::chrono::steady_clock;
+
+double elapsedMs(Clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+}
+
+}  // namespace
+
+bool cannyEdgeDetection(const std::string& readLocation, const std::string& writeLocation, double lowerThreshold, double higherThreshold) {
+    const Clock::time_point start = Clock::now();
+
     if (readLocation == writeLocation) {
-        std::cout << "The read file and save file locations cannot be the same.\n";
-        return;
+        std::cerr << "The read file and save file locations cannot be the same.\n";
+        return false;
     }
     cv::Mat img = cv::imread(readLocation);
+    if (img.empty()) {
+        std::cerr << "Could not read the image: " << readLocation << "\n";
+        return false;
+    }
 
     // READ_FILE:
 
@@ -19,6 +38,7 @@ void cannyEdgeDetection(std::string readLocation, std::string writeLocation, dou
 
     arrayToImg(pixels, pixelPtr, sizeRows, sizeCols, sizeDepth);
     // cv::imshow("Original", img);
+    const double readMs = elapsedMs(start);
 
     // GAUSSIAN_BLUR:
 
@@ -32,6 +52,7 @@ void cannyEdgeDetection(std::string readLocation, std::string writeLocation, dou
 
     arrayToImg(pixelsBlur, pixelPtr, sizeRows, sizeCols, sizeDepth);
     // cv::imshow("Blurred", img);
+    const double blurMs = elapsedMs(start);
 
     // GRAYSCALE:
 
@@ -41,16 +62,43 @@ void cannyEdgeDetection(std::string readLocation, std::string writeLocation, dou
     std::vector<int> pixelsGray = rgbToGrayscale(pixelsBlur, sizeRows, sizeCols, sizeDepth);
     arrayToImg(pixelsGray, pixelPtrGray, sizeRows, sizeCols, 1);
     // cv::imshow("Grayscale", imgGrayscale);
+    const double grayscaleMs = elapsedMs(start);
 
     // CANNY_FILTER:
 
     std::vector<int> pixelsCanny = cannyFilter(pixelsGray, sizeRows, sizeCols, 1, lowerThreshold, higherThreshold);
     arrayToImg(pixelsCanny, pixelPtrGray, sizeRows, sizeCols, 1);
+    const double cannyMs = elapsedMs(start);
 
-    cv::imshow("CannyEdgeDetection", imgGrayscale);
-    cv::waitKey(0);
+    // Write the result before showing the window: waitKey blocks until a key is
+    // pressed, so writing afterwards would hang forever without ever saving.
+    if (!cv::imwrite(writeLocation, imgGrayscale)) {
+        std::cerr << "Could not write the image: " << writeLocation << "\n";
+        return false;
+    }
+    std::cout << "Saved the result to: " << writeLocation << "\n";
 
-    cv::imwrite(writeLocation, imgGrayscale);
+    // The preview window is optional so the program can also run unattended (a
+    // headless machine, a script, CI). Set CANNY_NO_PREVIEW=1 to skip it.
+    if (std::getenv("CANNY_NO_PREVIEW") == nullptr) {
+        try {
+            cv::imshow("CannyEdgeDetection", imgGrayscale);
+            cv::waitKey(0);
+            cv::destroyAllWindows();
+        } catch (const cv::Exception& e) {
+            std::cerr << "Preview window unavailable: " << e.what() << "\n";
+        }
+    }
+
+    std::cout << std::fixed << std::setprecision(2)
+              << "\nTiming (" << sizeCols << "x" << sizeRows << ", lower=" << lowerThreshold << ", higher=" << higherThreshold << "):\n"
+              << "  read + pixel conversion : " << readMs << " ms\n"
+              << "  gaussian blur          : " << (blurMs - readMs) << " ms\n"
+              << "  grayscale              : " << (grayscaleMs - blurMs) << " ms\n"
+              << "  canny (sobel+NMS+thres): " << (cannyMs - grayscaleMs) << " ms\n"
+              << "  total (excl. saving)   : " << cannyMs << " ms\n";
+
+    return true;
 }
 
 std::vector<int> imgToArray(cv::Mat img, uint8_t* pixelPtr, int sizeRows, int sizeCols, int sizeDepth) {
