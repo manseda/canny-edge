@@ -15,6 +15,8 @@
 bool cannyEdgeDetection(const std::string& readLocation, const std::string& writeLocation, double lowerThreshold, double higherThreshold);
 std::vector<int> imgToArray(cv::Mat img, uint8_t* pixelPtr, int sizeRows, int sizeCols, int sizeDepth);
 void arrayToImg(std::vector<int>& pixels, uint8_t* pixelPtr, int sizeRows, int sizeCols, int sizeDepth);
-std::vector<int> gaussianBlur(std::vector<int>& pixels, std::vector<std::vector<double>>& kernel, double kernelConst, int sizeRows, int sizeCols, int sizeDepth);
-std::vector<int> rgbToGrayscale(std::vector<int>& pixels, int sizeRows, int sizeCols, int sizeDepth);
-std::vector<int> cannyFilter(std::vector<int>& pixels, int sizeRows, int sizeCols, int sizeDepth, double lowerThreshold, double higherThreshold);
+void gaussianBlur(const std::vector<int>& pixels, std::vector<int>& pixelsBlur, const std::vector<std::vector<double>>& kernel, double kernelConst, int sizeRows, int sizeCols, int sizeDepth);
+void rgbToGrayscale(const std::vector<int>& pixels, std::vector<int>& pixelsGray, int sizeRows, int sizeCols, int sizeDepth);
+double sobelGradient(const std::vector<int>& pixels, std::vector<double>& G, std::vector<int>& theta, int sizeRows, int sizeCols);
+void nonMaximumSuppression(std::vector<double>& G, const std::vector<int>& theta, std::vector<int>& pixelsCanny, double largestG, int sizeRows, int sizeCols);
+void doubleThreshold(std::vector<double>& G, std::vector<int>& pixelsCanny, double largestG, double lowerThreshold, double higherThreshold, int sizeRows, int sizeCols);

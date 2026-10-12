@@ -1,23 +1,21 @@
 #include "canny.h"
 
-#include <chrono>
+#include <time.h>
+
 #include <iomanip>
 
 // TODO: implement a function to read and write the images.
 
 namespace {
 
-using Clock = std::chrono::steady_clock;
-
-double elapsedMs(Clock::time_point start) {
-    return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+// Milliseconds between two CLOCK_MONOTONIC samples.
+double elapsedMs(const struct timespec& start, const struct timespec& end) {
+    return (double)(end.tv_sec - start.tv_sec) * 1000.0 + (double)(end.tv_nsec - start.tv_nsec) / 1.0e6;
 }
 
 }  // namespace
 
 bool cannyEdgeDetection(const std::string& readLocation, const std::string& writeLocation, double lowerThreshold, double higherThreshold) {
-    const Clock::time_point start = Clock::now();
-
     if (readLocation == writeLocation) {
         std::cerr << "The read file and save file locations cannot be the same.\n";
         return false;
@@ -38,9 +36,9 @@ bool cannyEdgeDetection(const std::string& readLocation, const std::string& writ
 
     arrayToImg(pixels, pixelPtr, sizeRows, sizeCols, sizeDepth);
     // cv::imshow("Original", img);
-    const double readMs = elapsedMs(start);
 
-    // GAUSSIAN_BLUR:
+    // BUFFERS: every buffer is allocated here, outside the timed regions, so the
+    // timings only measure the algorithmic cost of each stage.
 
     std::vector<std::vector<double>> kernel = {{2.0, 4.0, 5.0, 4.0, 2.0},
                                                {4.0, 9.0, 12.0, 9.0, 4.0},
@@ -48,27 +46,59 @@ bool cannyEdgeDetection(const std::string& readLocation, const std::string& writ
                                                {4.0, 9.0, 12.0, 9.0, 4.0},
                                                {2.0, 4.0, 5.0, 4.0, 2.0}};
     double kernelConst = (1.0 / 159.0);
-    std::vector<int> pixelsBlur = gaussianBlur(pixels, kernel, kernelConst, sizeRows, sizeCols, sizeDepth);
-
-    arrayToImg(pixelsBlur, pixelPtr, sizeRows, sizeCols, sizeDepth);
-    // cv::imshow("Blurred", img);
-    const double blurMs = elapsedMs(start);
-
-    // GRAYSCALE:
-
+    std::vector<int> pixelsBlur(sizeRows * sizeCols * sizeDepth);
+    std::vector<int> pixelsGray(sizeRows * sizeCols);
+    std::vector<double> G(sizeRows * sizeCols);
+    std::vector<int> theta(sizeRows * sizeCols);
+    std::vector<int> pixelsCanny(sizeRows * sizeCols);
     cv::Mat imgGrayscale(sizeRows, sizeCols, CV_8UC1, cv::Scalar(0));
     uint8_t* pixelPtrGray = (uint8_t*)imgGrayscale.data;
 
-    std::vector<int> pixelsGray = rgbToGrayscale(pixelsBlur, sizeRows, sizeCols, sizeDepth);
+    struct timespec start, end;
+    double blurMs, grayscaleMs, sobelMs, nmsMs, thresholdMs;
+
+    // GAUSSIAN_BLUR:
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    gaussianBlur(pixels, pixelsBlur, kernel, kernelConst, sizeRows, sizeCols, sizeDepth);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    blurMs = elapsedMs(start, end);
+
+    arrayToImg(pixelsBlur, pixelPtr, sizeRows, sizeCols, sizeDepth);
+    // cv::imshow("Blurred", img);
+
+    // GRAYSCALE:
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    rgbToGrayscale(pixelsBlur, pixelsGray, sizeRows, sizeCols, sizeDepth);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    grayscaleMs = elapsedMs(start, end);
+
     arrayToImg(pixelsGray, pixelPtrGray, sizeRows, sizeCols, 1);
     // cv::imshow("Grayscale", imgGrayscale);
-    const double grayscaleMs = elapsedMs(start);
 
-    // CANNY_FILTER:
+    // SOBEL_GRADIENT:
 
-    std::vector<int> pixelsCanny = cannyFilter(pixelsGray, sizeRows, sizeCols, 1, lowerThreshold, higherThreshold);
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    double largestG = sobelGradient(pixelsGray, G, theta, sizeRows, sizeCols);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    sobelMs = elapsedMs(start, end);
+
+    // NON_MAXIMUM_SUPPRESSION:
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    nonMaximumSuppression(G, theta, pixelsCanny, largestG, sizeRows, sizeCols);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    nmsMs = elapsedMs(start, end);
+
+    // DOUBLE_THRESHOLD (with hysteresis):
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    doubleThreshold(G, pixelsCanny, largestG, lowerThreshold, higherThreshold, sizeRows, sizeCols);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    thresholdMs = elapsedMs(start, end);
+
     arrayToImg(pixelsCanny, pixelPtrGray, sizeRows, sizeCols, 1);
-    const double cannyMs = elapsedMs(start);
 
     // Write the result before showing the window: waitKey blocks until a key is
     // pressed, so writing afterwards would hang forever without ever saving.
@@ -90,13 +120,14 @@ bool cannyEdgeDetection(const std::string& readLocation, const std::string& writ
         }
     }
 
-    std::cout << std::fixed << std::setprecision(2)
+    std::cout << std::fixed << std::setprecision(3)
               << "\nTiming (" << sizeCols << "x" << sizeRows << ", lower=" << lowerThreshold << ", higher=" << higherThreshold << "):\n"
-              << "  read + pixel conversion : " << readMs << " ms\n"
-              << "  gaussian blur          : " << (blurMs - readMs) << " ms\n"
-              << "  grayscale              : " << (grayscaleMs - blurMs) << " ms\n"
-              << "  canny (sobel+NMS+thres): " << (cannyMs - grayscaleMs) << " ms\n"
-              << "  total (excl. saving)   : " << cannyMs << " ms\n";
+              << "  gaussian blur           : " << blurMs << " ms\n"
+              << "  grayscale               : " << grayscaleMs << " ms\n"
+              << "  sobel gradient          : " << sobelMs << " ms\n"
+              << "  non-maximum suppression : " << nmsMs << " ms\n"
+              << "  double threshold        : " << thresholdMs << " ms\n"
+              << "  total (5 stages)        : " << (blurMs + grayscaleMs + sobelMs + nmsMs + thresholdMs) << " ms\n";
 
     return true;
 }
@@ -127,8 +158,7 @@ void arrayToImg(std::vector<int>& pixels, uint8_t* pixelPtr, int sizeRows, int s
     return;
 }
 
-std::vector<int> gaussianBlur(std::vector<int>& pixels, std::vector<std::vector<double>>& kernel, double kernelConst, int sizeRows, int sizeCols, int sizeDepth) {
-    std::vector<int> pixelsBlur(sizeRows * sizeCols * sizeDepth);
+void gaussianBlur(const std::vector<int>& pixels, std::vector<int>& pixelsBlur, const std::vector<std::vector<double>>& kernel, double kernelConst, int sizeRows, int sizeCols, int sizeDepth) {
     for (int i = 0; i < sizeRows; i++) {
         for (int j = 0; j < sizeCols; j++) {
             for (int k = 0; k < sizeDepth; k++) {
@@ -147,11 +177,9 @@ std::vector<int> gaussianBlur(std::vector<int>& pixels, std::vector<std::vector<
             }
         }
     }
-    return pixelsBlur;
 }
 
-std::vector<int> rgbToGrayscale(std::vector<int>& pixels, int sizeRows, int sizeCols, int sizeDepth) {
-    std::vector<int> pixelsGray(sizeRows * sizeCols);
+void rgbToGrayscale(const std::vector<int>& pixels, std::vector<int>& pixelsGray, int sizeRows, int sizeCols, int sizeDepth) {
     for (int i = 0; i < sizeRows; i++) {
         for (int j = 0; j < sizeCols; j++) {
             int sum = 0;
@@ -161,15 +189,13 @@ std::vector<int> rgbToGrayscale(std::vector<int>& pixels, int sizeRows, int size
             pixelsGray[i * sizeCols + j] = (int)(sum / sizeDepth);
         }
     }
-    return pixelsGray;
 }
 
-std::vector<int> cannyFilter(std::vector<int>& pixels, int sizeRows, int sizeCols, int sizeDepth, double lowerThreshold, double higherThreshold) {
-    std::vector<int> pixelsCanny(sizeRows * sizeCols);
+// Sobel gradient: fills the magnitude G and the direction theta (rounded to the
+// nearest 45 degrees) and returns the largest magnitude found.
+double sobelGradient(const std::vector<int>& pixels, std::vector<double>& G, std::vector<int>& theta, int sizeRows, int sizeCols) {
     int gx[3][3] = {{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}};
     int gy[3][3] = {{-1, -2, -1}, {0, 0, 0}, {1, 2, 1}};
-    double* G = new double[sizeRows * sizeCols];
-    std::vector<int> theta(sizeRows * sizeCols);
     double largestG = 0;
 
     // perform canny edge detection on everything but the edges
@@ -230,8 +256,10 @@ std::vector<int> cannyFilter(std::vector<int>& pixels, int sizeRows, int sizeCol
         for (int j = 1; j < sizeCols - 1; j++) {
         }
     }
+    return largestG;
+}
 
-    // non-maximum suppression
+void nonMaximumSuppression(std::vector<double>& G, const std::vector<int>& theta, std::vector<int>& pixelsCanny, double largestG, int sizeRows, int sizeCols) {
     for (int i = 1; i < sizeRows - 1; i++) {
         for (int j = 1; j < sizeCols - 1; j++) {
             if (theta[i * sizeCols + j] == 0 || theta[i * sizeCols + j] == 180) {
@@ -255,8 +283,9 @@ std::vector<int> cannyFilter(std::vector<int>& pixels, int sizeRows, int sizeCol
             pixelsCanny[i * sizeCols + j] = (int)(G[i * sizeCols + j] * (255.0 / largestG));
         }
     }
+}
 
-    // double threshold
+void doubleThreshold(std::vector<double>& G, std::vector<int>& pixelsCanny, double largestG, double lowerThreshold, double higherThreshold, int sizeRows, int sizeCols) {
     bool changes;
     do {
         changes = false;
@@ -287,6 +316,4 @@ std::vector<int> cannyFilter(std::vector<int>& pixels, int sizeRows, int sizeCol
             }
         }
     } while (changes);
-
-    return pixelsCanny;
 }
