@@ -5,6 +5,8 @@
 #include <iostream>
 #include <string>
 
+#include <mpi.h>
+
 #include "canny.h"
 
 namespace fs = std::filesystem;
@@ -13,6 +15,7 @@ namespace {
 
 void printUsage(const char* program) {
     std::cout << "Usage: " << program << " [input] [output] [lowerThreshold] [higherThreshold]\n\n"
+              << "Run with: mpiexec -n <processes> " << program << " [arguments]\n\n"
               << "  input           image to process (default: ../images/Sukuna.jpg, falling back\n"
               << "                  to images/Sukuna.jpg so the program works from the project\n"
               << "                  root or from the build/ directory)\n"
@@ -37,12 +40,11 @@ bool parseThreshold(const char* text, double& out) {
     }
 }
 
-}  // namespace
-
-int main(int argc, char* argv[]) {
+int prepareArguments(int argc, char* argv[], std::string& readLocation, std::string& writeLocation,
+                     double& lowerThreshold, double& higherThreshold) {
     if (argc > 1 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help")) {
         printUsage(argv[0]);
-        return 0;
+        return 2;
     }
     if (argc > 5) {
         std::cerr << "Too many arguments.\n\n";
@@ -50,9 +52,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Default input: look for the sample image next to the project root so the
-    // program works both when run from build/ and when run from the root.
-    std::string readLocation;
     if (argc >= 2) {
         readLocation = argv[1];
     } else {
@@ -75,8 +74,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Default output: alongside the input, with "Canny" appended to the stem.
-    std::string writeLocation;
     if (argc >= 3) {
         writeLocation = argv[2];
     } else {
@@ -85,8 +82,6 @@ int main(int argc, char* argv[]) {
         writeLocation = out.string();
     }
 
-    double lowerThreshold = 0.03;
-    double higherThreshold = 0.1;
     if (argc >= 4 && !parseThreshold(argv[3], lowerThreshold)) {
         std::cerr << "Invalid lower threshold: " << argv[3] << " (expected a value in (0, 1])\n";
         return 1;
@@ -99,19 +94,59 @@ int main(int argc, char* argv[]) {
         std::cerr << "lowerThreshold (" << lowerThreshold << ") must not exceed higherThreshold (" << higherThreshold << ").\n";
         return 1;
     }
+    return 0;
+}
+
+}  // namespace
+
+int main(int argc, char* argv[]) {
+    MPI_Init(&argc, &argv);
+    int rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+    std::string readLocation;
+    std::string writeLocation;
+    double lowerThreshold = 0.03;
+    double higherThreshold = 0.1;
+
+    const int validationStatus = rank == 0
+                                     ? prepareArguments(argc, argv, readLocation, writeLocation,
+                                                        lowerThreshold, higherThreshold)
+                                     : 0;
+    int sharedValidationStatus = validationStatus;
+    MPI_Bcast(&sharedValidationStatus, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    if (sharedValidationStatus != 0) {
+        MPI_Finalize();
+        return sharedValidationStatus == 2 ? 0 : sharedValidationStatus;
+    }
+
+    auto broadcastString = [rank](std::string& value) {
+        int length = rank == 0 ? static_cast<int>(value.size()) : 0;
+        MPI_Bcast(&length, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        if (rank != 0) { value.resize(length); }
+        MPI_Bcast(value.data(), length, MPI_CHAR, 0, MPI_COMM_WORLD);
+    };
+    broadcastString(readLocation);
+    broadcastString(writeLocation);
+    double thresholds[2] = {lowerThreshold, higherThreshold};
+    MPI_Bcast(thresholds, 2, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    lowerThreshold = thresholds[0];
+    higherThreshold = thresholds[1];
 
     const auto start = std::chrono::steady_clock::now();
     const bool ok = cannyEdgeDetection(readLocation, writeLocation, lowerThreshold, higherThreshold);
     if (!ok) {
+        MPI_Finalize();
         return 1;
     }
 
     // With the preview window open this wall clock would include the time the
     // user spends looking at the result, so only report it when it is headless.
-    if (std::getenv("CANNY_NO_PREVIEW") != nullptr) {
+    if (rank == 0 && std::getenv("CANNY_NO_PREVIEW") != nullptr) {
         const double totalMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         std::cout << std::fixed << std::setprecision(2) << "  wall clock (program)   : " << totalMs << " ms\n";
     }
 
+    MPI_Finalize();
     return 0;
 }

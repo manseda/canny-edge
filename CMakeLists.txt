@@ -31,6 +31,7 @@ set(HEADERS canny.h)
 
 # find opencv
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui)
+find_package(MPI REQUIRED COMPONENTS CXX)
 include_directories(${OpenCV_INCLUDE_DIRS})
 
 # find_package(Torch REQUIRED)
@@ -42,9 +43,10 @@ add_library(
   canny.cpp
 )
 
+target_link_libraries(canny.hpp PUBLIC MPI::MPI_CXX)
 
 add_executable(canny main.cpp)
 
-target_link_libraries(canny "${OpenCV_LIBS}" canny.hpp)
+target_link_libraries(canny "${OpenCV_LIBS}" canny.hpp MPI::MPI_CXX)
 
 set_property(TARGET canny PROPERTY CXX_STANDARD 17)
